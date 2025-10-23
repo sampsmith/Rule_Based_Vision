@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "label": "dough",
+      "type": "detect",
+      "lower": [
+        6,
+        0,
+        115
+      ],
+      "upper": [
+        39,
+        105,
+        255
+      ]
+    }
+  ],
+  "ignore_labels": []
+}
