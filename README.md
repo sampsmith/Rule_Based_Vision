@@ -1,4 +1,4 @@
-# Dough Vision Detector
+# Rule Based Machine Vision
 
 A rule-based machine vision application for detecting dough on production lines using OpenCV. The system uses color segmentation, contour detection, and configurable rule-based logic to identify and track dough pieces in real-time.
 
