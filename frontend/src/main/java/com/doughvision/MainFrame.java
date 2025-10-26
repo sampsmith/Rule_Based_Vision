@@ -12,14 +12,19 @@ public class MainFrame extends JFrame {
     private TeachModePanel teachModePanel;
     private InferencePanel inferencePanel;
     private ConfigurationPanel configurationPanel;
+    private RecipePanel recipePanel;
     private ConfigurationManager configManager;
     
     private JTabbedPane tabbedPane;
+    private double dpiScale = 1.0; // DPI scaling factor
     
     public MainFrame() {
         super("Dough Vision Detector");
         
         configManager = new ConfigurationManager();
+        
+        // Detect and apply DPI scaling
+        detectDPIScaling();
         
         // Set modern look and feel
         setModernLookAndFeel();
@@ -29,11 +34,51 @@ public class MainFrame extends JFrame {
         setupMenuBar();
         
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(1400, 900);
+        // Scale window size based on DPI
+        int baseWidth = 1600;
+        int baseHeight = 1000;
+        setSize((int)(baseWidth * dpiScale), (int)(baseHeight * dpiScale));
         setLocationRelativeTo(null);
+        setExtendedState(JFrame.MAXIMIZED_BOTH); // Start maximized for touch screens
         
         // Load default configuration
         configManager.loadDefaultConfig();
+    }
+    
+    private void detectDPIScaling() {
+        try {
+            // Get screen DPI
+            GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+            GraphicsDevice gd = ge.getDefaultScreenDevice();
+            DisplayMode dm = gd.getDisplayMode();
+            
+            // Calculate DPI
+            int dpiX = Toolkit.getDefaultToolkit().getScreenResolution();
+            int dpiY = dpiX;
+            
+            // Default DPI is 96 (Windows) or 72 (Mac)
+            // Scale factor: actual DPI / 96
+            dpiScale = dpiX / 96.0;
+            
+            // Ensure minimum scale of 1.0
+            if (dpiScale < 1.0) {
+                dpiScale = 1.0;
+            }
+            
+            // Clamp to reasonable range (1x to 3x)
+            if (dpiScale > 3.0) {
+                dpiScale = 3.0;
+            }
+            
+            System.out.println("Screen DPI: " + dpiX + ", Scale factor: " + dpiScale);
+            
+            // Set system property for Java scaling
+            System.setProperty("sun.java2d.uiScale", String.valueOf(dpiScale));
+            
+        } catch (Exception e) {
+            System.err.println("Error detecting DPI: " + e.getMessage());
+            dpiScale = 1.0;
+        }
     }
     
     private void setModernLookAndFeel() {
@@ -41,14 +86,35 @@ public class MainFrame extends JFrame {
             // Use system look and feel
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             
-            // Modern color scheme
+            // Calculate scaled sizes based on DPI
+            int baseButtonFontSize = 16;
+            int baseLabelFontSize = 15;
+            int baseTabFontSize = 18;
+            int baseSpinnerFontSize = 16;
+            
+            int buttonFontSize = (int)(baseButtonFontSize * dpiScale);
+            int labelFontSize = (int)(baseLabelFontSize * dpiScale);
+            int tabFontSize = (int)(baseTabFontSize * dpiScale);
+            int spinnerFontSize = (int)(baseSpinnerFontSize * dpiScale);
+            
+            int buttonPadding = (int)(12 * dpiScale);
+            int horizontalPadding = (int)(20 * dpiScale);
+            
+            // Touch-friendly sizing (scaled by DPI)
             UIManager.put("Panel.background", new Color(245, 245, 247));
             UIManager.put("Button.background", new Color(0, 122, 255));
             UIManager.put("Button.foreground", Color.WHITE);
-            UIManager.put("Button.font", new Font("SansSerif", Font.BOLD, 13));
-            UIManager.put("Label.font", new Font("SansSerif", Font.PLAIN, 13));
-            UIManager.put("TabbedPane.font", new Font("SansSerif", Font.BOLD, 14));
+            UIManager.put("Button.font", new Font("SansSerif", Font.BOLD, buttonFontSize));
+            UIManager.put("Button.margin", new Insets(buttonPadding, horizontalPadding, buttonPadding, horizontalPadding));
+            UIManager.put("Label.font", new Font("SansSerif", Font.PLAIN, labelFontSize));
+            UIManager.put("TabbedPane.font", new Font("SansSerif", Font.BOLD, tabFontSize));
             UIManager.put("TabbedPane.selected", new Color(0, 122, 255));
+            UIManager.put("TabbedPane.contentBorderInsets", new Insets((int)(8*dpiScale), (int)(8*dpiScale), (int)(8*dpiScale), (int)(8*dpiScale)));
+            UIManager.put("TabbedPane.tabInsets", new Insets(buttonPadding, horizontalPadding, buttonPadding, horizontalPadding));
+            UIManager.put("Spinner.font", new Font("SansSerif", Font.PLAIN, spinnerFontSize));
+            UIManager.put("CheckBox.font", new Font("SansSerif", Font.PLAIN, labelFontSize));
+            UIManager.put("TextField.font", new Font("SansSerif", Font.PLAIN, spinnerFontSize));
+            UIManager.put("TextArea.font", new Font("SansSerif", Font.PLAIN, labelFontSize));
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -58,6 +124,7 @@ public class MainFrame extends JFrame {
         teachModePanel = new TeachModePanel(configManager);
         inferencePanel = new InferencePanel(configManager);
         configurationPanel = new ConfigurationPanel(configManager);
+        recipePanel = new RecipePanel(configManager);
         
         tabbedPane = new JTabbedPane();
     }
@@ -65,14 +132,16 @@ public class MainFrame extends JFrame {
     private void layoutComponents() {
         setLayout(new BorderLayout());
         
-        // Modern tab styling
-        tabbedPane.setFont(new Font("SansSerif", Font.BOLD, 14));
+        // Touch-friendly tab styling (scaled by DPI)
+        tabbedPane.setFont(new Font("SansSerif", Font.BOLD, (int)(18 * dpiScale)));
         tabbedPane.setBackground(new Color(245, 245, 247));
+        tabbedPane.setTabPlacement(JTabbedPane.TOP);
         
-        // Add tabs with icons and better labels
-        tabbedPane.addTab("  📚 Teach  ", teachModePanel);
-        tabbedPane.addTab("  🔍 Inference  ", inferencePanel);
-        tabbedPane.addTab("  ⚙️ Config  ", configurationPanel);
+        // Add tabs with icons and better labels (bigger spacing for touch)
+        tabbedPane.addTab("  📚  Teach  ", teachModePanel);
+        tabbedPane.addTab("  🔍  Inference  ", inferencePanel);
+        tabbedPane.addTab("  ⚙️  Config  ", configurationPanel);
+        tabbedPane.addTab("  📋  Recipes  ", recipePanel);
         
         add(tabbedPane, BorderLayout.CENTER);
     }

@@ -1,7 +1,15 @@
 package com.doughvision;
 
 import javax.swing.*;
+import javax.swing.event.ListSelectionEvent;
+import javax.swing.event.ListSelectionListener;
 import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
+import com.google.gson.*;
 
 /**
  * Panel for editing configuration parameters
@@ -24,6 +32,14 @@ public class ConfigurationPanel extends JPanel {
     private JSpinner pixelsPerMmSpinner;
     private JSpinner targetWidthSpinner, targetHeightSpinner;
     private JSpinner toleranceSpinner;
+    
+    // Template management
+    private JList<String> templateList;
+    private DefaultListModel<String> templateListModel;
+    private JButton saveTemplateButton;
+    private JButton loadTemplateButton;
+    private JButton deleteTemplateButton;
+    private List<MeasurementTemplate> templates;
     
     private JButton applyButton;
     private JButton resetButton;
@@ -69,6 +85,28 @@ public class ConfigurationPanel extends JPanel {
         
         resetButton = new JButton("Reset to Defaults");
         resetButton.addActionListener(e -> resetToDefaults());
+        
+        // Initialize templates
+        templates = new ArrayList<>();
+        loadTemplates();
+        
+        // Template management UI
+        templateListModel = new DefaultListModel<>();
+        updateTemplateListModel();
+        
+        templateList = new JList<>(templateListModel);
+        templateList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        templateList.addListSelectionListener(e -> loadTemplateButton.setEnabled(!templateList.isSelectionEmpty()));
+        
+        saveTemplateButton = new JButton("💾 Save Template");
+        saveTemplateButton.addActionListener(e -> saveTemplate());
+        
+        loadTemplateButton = new JButton("📂 Load Template");
+        loadTemplateButton.setEnabled(false);
+        loadTemplateButton.addActionListener(e -> loadSelectedTemplate());
+        
+        deleteTemplateButton = new JButton("🗑️ Delete Template");
+        deleteTemplateButton.addActionListener(e -> deleteSelectedTemplate());
     }
     
     private void layoutComponents() {
@@ -92,6 +130,10 @@ public class ConfigurationPanel extends JPanel {
         
         // Measurement settings section
         mainPanel.add(createMeasurementSettingsPanel());
+        mainPanel.add(Box.createVerticalStrut(15));
+        
+        // Template management section
+        mainPanel.add(createTemplateManagementPanel());
         mainPanel.add(Box.createVerticalStrut(15));
         
         // Button panel
@@ -177,6 +219,162 @@ public class ConfigurationPanel extends JPanel {
         panel.add(toleranceSpinner);
         
         return panel;
+    }
+    
+    private JPanel createTemplateManagementPanel() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createTitledBorder("💾 Measurement Templates"));
+        
+        // List panel
+        JPanel listPanel = new JPanel(new BorderLayout(5, 5));
+        listPanel.add(new JLabel("Saved Templates:"), BorderLayout.NORTH);
+        JScrollPane scrollPane = new JScrollPane(templateList);
+        scrollPane.setPreferredSize(new Dimension(200, 120));
+        listPanel.add(scrollPane, BorderLayout.CENTER);
+        
+        // Buttons panel
+        JPanel buttonPanel = new JPanel(new GridLayout(3, 1, 5, 5));
+        buttonPanel.add(saveTemplateButton);
+        buttonPanel.add(loadTemplateButton);
+        buttonPanel.add(deleteTemplateButton);
+        
+        panel.add(listPanel, BorderLayout.CENTER);
+        panel.add(buttonPanel, BorderLayout.EAST);
+        
+        return panel;
+    }
+    
+    private void saveTemplate() {
+        String name = JOptionPane.showInputDialog(this,
+            "Enter template name:",
+            "Save Template",
+            JOptionPane.QUESTION_MESSAGE);
+        
+        if (name != null && !name.trim().isEmpty()) {
+            // Check if template with this name already exists
+            for (MeasurementTemplate template : templates) {
+                if (template.name.equals(name)) {
+                    int result = JOptionPane.showConfirmDialog(this,
+                        "Template '" + name + "' already exists. Overwrite?",
+                        "Template Exists",
+                        JOptionPane.YES_NO_OPTION);
+                    if (result == JOptionPane.NO_OPTION) {
+                        return;
+                    }
+                    // Remove existing template
+                    templates.remove(template);
+                    break;
+                }
+            }
+            
+            // Create new template from current spinner values
+            MeasurementTemplate template = new MeasurementTemplate();
+            template.name = name;
+            template.pixelsPerMm = (double)pixelsPerMmSpinner.getValue();
+            template.targetWidth = (double)targetWidthSpinner.getValue();
+            template.targetHeight = (double)targetHeightSpinner.getValue();
+            template.tolerance = (double)toleranceSpinner.getValue();
+            
+            templates.add(template);
+            updateTemplateListModel();
+            saveTemplates();
+            
+            JOptionPane.showMessageDialog(this,
+                "Template '" + name + "' saved successfully!",
+                "Success",
+                JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+    
+    private void loadSelectedTemplate() {
+        int selectedIndex = templateList.getSelectedIndex();
+        if (selectedIndex >= 0 && selectedIndex < templates.size()) {
+            MeasurementTemplate template = templates.get(selectedIndex);
+            
+            pixelsPerMmSpinner.setValue(template.pixelsPerMm);
+            targetWidthSpinner.setValue(template.targetWidth);
+            targetHeightSpinner.setValue(template.targetHeight);
+            toleranceSpinner.setValue(template.tolerance);
+            
+            JOptionPane.showMessageDialog(this,
+                "Template '" + template.name + "' loaded successfully!",
+                "Template Loaded",
+                JOptionPane.INFORMATION_MESSAGE);
+        }
+    }
+    
+    private void deleteSelectedTemplate() {
+        int selectedIndex = templateList.getSelectedIndex();
+        if (selectedIndex >= 0 && selectedIndex < templates.size()) {
+            MeasurementTemplate template = templates.get(selectedIndex);
+            
+            int result = JOptionPane.showConfirmDialog(this,
+                "Delete template '" + template.name + "'?",
+                "Confirm Delete",
+                JOptionPane.YES_NO_OPTION);
+            
+            if (result == JOptionPane.YES_OPTION) {
+                templates.remove(selectedIndex);
+                updateTemplateListModel();
+                saveTemplates();
+                
+                JOptionPane.showMessageDialog(this,
+                    "Template deleted successfully!",
+                    "Success",
+                    JOptionPane.INFORMATION_MESSAGE);
+            }
+        }
+    }
+    
+    private void updateTemplateListModel() {
+        templateListModel.clear();
+        for (MeasurementTemplate template : templates) {
+            templateListModel.addElement(template.name);
+        }
+    }
+    
+    private void loadTemplates() {
+        try {
+            File templatesFile = new File("measurement_templates.json");
+            if (!templatesFile.exists()) {
+                return;
+            }
+            
+            try (FileReader reader = new FileReader(templatesFile)) {
+                Gson gson = new Gson();
+                JsonElement jsonElement = JsonParser.parseReader(reader);
+                
+                if (jsonElement.isJsonArray()) {
+                    JsonArray jsonArray = jsonElement.getAsJsonArray();
+                    for (JsonElement element : jsonArray) {
+                        MeasurementTemplate template = gson.fromJson(element, MeasurementTemplate.class);
+                        templates.add(template);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error loading templates: " + e.getMessage());
+        }
+    }
+    
+    private void saveTemplates() {
+        try {
+            File templatesFile = new File("measurement_templates.json");
+            try (FileWriter writer = new FileWriter(templatesFile)) {
+                Gson gson = new GsonBuilder().setPrettyPrinting().create();
+                gson.toJson(templates, writer);
+            }
+        } catch (Exception e) {
+            System.err.println("Error saving templates: " + e.getMessage());
+        }
+    }
+    
+    private static class MeasurementTemplate {
+        String name;
+        double pixelsPerMm;
+        double targetWidth;
+        double targetHeight;
+        double tolerance;
     }
     
     private void loadCurrentConfig() {

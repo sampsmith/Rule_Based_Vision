@@ -269,14 +269,24 @@ public class InferencePanel extends JPanel {
     
     private JButton createStyledButton(String text, Color bg) {
         JButton btn = new JButton(text);
-        btn.setFont(new Font("SansSerif", Font.BOLD, 13));
+        
+        // Get DPI scale for this display
+        double dpiScale = Toolkit.getDefaultToolkit().getScreenResolution() / 96.0;
+        if (dpiScale < 1.0) dpiScale = 1.0;
+        if (dpiScale > 3.0) dpiScale = 3.0;
+        
+        int fontSize = (int)(16 * dpiScale);
+        int width = (int)(180 * dpiScale);
+        int height = (int)(50 * dpiScale);
+        
+        btn.setFont(new Font("SansSerif", Font.BOLD, fontSize));
         btn.setBackground(bg);
         btn.setForeground(Color.WHITE);
         btn.setFocusPainted(false);
         btn.setBorderPainted(false);
         btn.setOpaque(true);
         btn.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btn.setPreferredSize(new Dimension(150, 35));
+        btn.setPreferredSize(new Dimension(width, height));
         
         // Hover effect
         btn.addMouseListener(new java.awt.event.MouseAdapter() {

@@ -1,0 +1,9 @@
+[
+  {
+    "name": "tesco 200",
+    "pixelsPerMm": 1.0,
+    "targetWidth": 90.0,
+    "targetHeight": 480.0,
+    "tolerance": 15.0
+  }
+]

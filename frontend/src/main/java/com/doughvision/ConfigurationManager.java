@@ -44,7 +44,12 @@ public class ConfigurationManager {
         this.trainingData = new ArrayList<>();
         this.learnedRules = new HashMap<>();
         this.ignoreLabels = new ArrayList<>();
-        loadDefaultConfig();
+        
+        // Try to load saved session configuration
+        if (!loadSessionConfig()) {
+            // If no saved config, load defaults
+            loadDefaultConfig();
+        }
         
         // Try to load saved rules on startup
         loadRulesFromFile();
@@ -185,14 +190,17 @@ public class ConfigurationManager {
     public void setColorRange(int h1, int s1, int v1, int h2, int s2, int v2) {
         config.colorLower = new int[]{h1, s1, v1};
         config.colorUpper = new int[]{h2, s2, v2};
+        saveSessionConfig(); // Auto-save
     }
     
     public void setMinArea(int area) {
         config.minArea = area;
+        saveSessionConfig(); // Auto-save
     }
     
     public void setMaxArea(int area) {
         config.maxArea = area;
+        saveSessionConfig(); // Auto-save
     }
     
     public void setROIRegions(List<Rectangle> regions) {
@@ -823,6 +831,130 @@ public class ConfigurationManager {
     }
     
     /**
+     * Calculate oriented bounding box using PCA
+     */
+    private static class OrientedBoundingBox {
+        Point center;
+        double width;
+        double height;
+        double angle; // in radians
+        Point[] corners; // 4 corners of rotated box
+    }
+    
+    private OrientedBoundingBox calculateOBB(boolean[][] mask, Rectangle bounds) {
+        OrientedBoundingBox obb = new OrientedBoundingBox();
+        
+        // Collect all points in the region
+        List<Point> points = new ArrayList<>();
+        for (int y = bounds.y; y < bounds.y + bounds.height; y++) {
+            for (int x = bounds.x; x < bounds.x + bounds.width; x++) {
+                if (y < mask.length && x < mask[0].length && mask[y][x]) {
+                    points.add(new Point(x, y));
+                }
+            }
+        }
+        
+        if (points.isEmpty()) {
+            return null;
+        }
+        
+        // Calculate centroid
+        double sumX = 0, sumY = 0;
+        for (Point p : points) {
+            sumX += p.x;
+            sumY += p.y;
+        }
+        obb.center = new Point((int)(sumX / points.size()), (int)(sumY / points.size()));
+        
+        // Calculate covariance matrix for PCA
+        double covXX = 0, covXY = 0, covYY = 0;
+        for (Point p : points) {
+            double dx = p.x - obb.center.x;
+            double dy = p.y - obb.center.y;
+            covXX += dx * dx;
+            covXY += dx * dy;
+            covYY += dy * dy;
+        }
+        
+        int n = points.size();
+        covXX /= n;
+        covXY /= n;
+        covYY /= n;
+        
+        // Find principal axis using PCA
+        // Eigenvalues of [covXX covXY; covXY covYY]
+        double trace = covXX + covYY;
+        double det = covXX * covYY - covXY * covXY;
+        double sqrtDisc = Math.sqrt(trace * trace / 4 - det);
+        
+        double lambda1 = trace / 2 + sqrtDisc;
+        double lambda2 = trace / 2 - sqrtDisc;
+        
+        // Principal eigenvector
+        double vx, vy;
+        if (Math.abs(covXY) > 1e-10) {
+            vx = lambda1 - covYY;
+            vy = covXY;
+        } else {
+            vx = lambda1 > lambda2 ? 1 : 0;
+            vy = lambda1 > lambda2 ? 0 : 1;
+        }
+        
+        double len = Math.sqrt(vx * vx + vy * vy);
+        if (len > 0) {
+            vx /= len;
+            vy /= len;
+        }
+        
+        obb.angle = Math.atan2(vy, vx);
+        
+        // Project all points onto principal axes to find dimensions
+        double minProj1 = Double.MAX_VALUE, maxProj1 = -Double.MAX_VALUE;
+        double minProj2 = Double.MAX_VALUE, maxProj2 = -Double.MAX_VALUE;
+        
+        double cosAngle = Math.cos(-obb.angle);
+        double sinAngle = Math.sin(-obb.angle);
+        
+        for (Point p : points) {
+            double dx = p.x - obb.center.x;
+            double dy = p.y - obb.center.y;
+            
+            // Rotate to align with principal axes
+            double proj1 = dx * cosAngle - dy * sinAngle;
+            double proj2 = dx * sinAngle + dy * cosAngle;
+            
+            minProj1 = Math.min(minProj1, proj1);
+            maxProj1 = Math.max(maxProj1, proj1);
+            minProj2 = Math.min(minProj2, proj2);
+            maxProj2 = Math.max(maxProj2, proj2);
+        }
+        
+        obb.width = maxProj1 - minProj1;
+        obb.height = maxProj2 - minProj2;
+        
+        // Calculate corners
+        double halfW = obb.width / 2;
+        double halfH = obb.height / 2;
+        cosAngle = Math.cos(obb.angle);
+        sinAngle = Math.sin(obb.angle);
+        
+        obb.corners = new Point[4];
+        double[][] offsets = {{halfW, halfH}, {-halfW, halfH}, {-halfW, -halfH}, {halfW, -halfH}};
+        for (int i = 0; i < 4; i++) {
+            double x = offsets[i][0];
+            double y = offsets[i][1];
+            double rotatedX = x * cosAngle - y * sinAngle;
+            double rotatedY = x * sinAngle + y * cosAngle;
+            obb.corners[i] = new Point(
+                obb.center.x + (int)rotatedX,
+                obb.center.y + (int)rotatedY
+            );
+        }
+        
+        return obb;
+    }
+    
+    /**
      * Draw contours around detected regions with measurements
      */
     private BufferedImage drawContours(BufferedImage image, boolean[][] mask) {
@@ -851,7 +983,7 @@ public class ConfigurationManager {
             }
         }
         
-        // Draw bounding boxes and measurements with pass/fail
+        // Draw oriented bounding boxes and measurements with pass/fail
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g2d.setStroke(new BasicStroke(3));
         g2d.setFont(new Font("SansSerif", Font.BOLD, 13));
@@ -861,14 +993,29 @@ public class ConfigurationManager {
         int failCount = 0;
         
         for (Rectangle box : boxes) {
+            // Calculate OBB for accurate measurements
+            OrientedBoundingBox obb = calculateOBB(mask, box);
+            
+            if (obb == null) {
+                continue;
+            }
+            
+            // Use OBB dimensions for measurements (always use the larger dimension as length)
+            double lengthPx = Math.max(obb.width, obb.height);
+            double widthPx = Math.min(obb.width, obb.height);
+            
             // Convert to mm
-            double widthMm = box.width / pixelsPerMm;
-            double heightMm = box.height / pixelsPerMm;
+            double lengthMm = lengthPx / pixelsPerMm;
+            double widthMm = widthPx / pixelsPerMm;
             
             // Check pass/fail based on tolerance
-            double widthDiff = Math.abs(widthMm - targetWidth) / targetWidth * 100.0;
-            double heightDiff = Math.abs(heightMm - targetHeight) / targetHeight * 100.0;
-            boolean pass = (widthDiff <= tolerance && heightDiff <= tolerance);
+            // Compare against target dimensions (larger vs larger, smaller vs smaller)
+            double lengthTarget = Math.max(targetWidth, targetHeight);
+            double widthTarget = Math.min(targetWidth, targetHeight);
+            
+            double lengthDiff = Math.abs(lengthMm - lengthTarget) / lengthTarget * 100.0;
+            double widthDiff = Math.abs(widthMm - widthTarget) / widthTarget * 100.0;
+            boolean pass = (lengthDiff <= tolerance && widthDiff <= tolerance);
             
             if (pass) {
                 passCount++;
@@ -880,30 +1027,39 @@ public class ConfigurationManager {
             Color boxColor = pass ? new Color(0, 255, 0) : new Color(255, 0, 0);
             g2d.setColor(boxColor);
             
-            // Draw bounding box
-            g2d.drawRect(box.x, box.y, box.width, box.height);
+            // Draw oriented bounding box
+            int[] xPoints = new int[4];
+            int[] yPoints = new int[4];
+            for (int i = 0; i < 4; i++) {
+                xPoints[i] = obb.corners[i].x;
+                yPoints[i] = obb.corners[i].y;
+            }
+            g2d.drawPolygon(xPoints, yPoints, 4);
             
             // Draw measurement labels
+            String lengthLabel = String.format("L: %.1fmm", lengthMm);
             String widthLabel = String.format("W: %.1fmm", widthMm);
-            String heightLabel = String.format("H: %.1fmm", heightMm);
             String statusLabel = pass ? "✓ PASS" : "✗ REJECT";
             String idLabel = String.format("#%d", detectionNum);
             
+            // Position labels near the center of the OBB
+            int labelX = obb.center.x - 60;
+            int labelY = obb.center.y - 10;
+            
             // Background for text
             g2d.setColor(new Color(0, 0, 0, 200));
-            g2d.fillRect(box.x, box.y - 38, 120, 36);
-            g2d.fillRect(box.x + box.width + 2, box.y + box.height/2 - 18, 85, 36);
+            g2d.fillRect(labelX - 5, labelY - 40, 120, 50);
             
             // Draw text
             g2d.setColor(boxColor);
-            g2d.drawString(idLabel + " " + statusLabel, box.x + 3, box.y - 22);
-            g2d.drawString(widthLabel, box.x + 3, box.y - 6);
-            g2d.drawString(heightLabel, box.x + box.width + 5, box.y + box.height/2 - 2);
+            g2d.drawString(idLabel + " " + statusLabel, labelX, labelY - 22);
+            g2d.drawString(lengthLabel, labelX, labelY - 6);
+            g2d.drawString(widthLabel, labelX, labelY + 10);
             
             // Show deviation if fail
             if (!pass) {
-                String devLabel = String.format("Δ%.0f%%", Math.max(widthDiff, heightDiff));
-                g2d.drawString(devLabel, box.x + box.width + 5, box.y + box.height/2 + 14);
+                String devLabel = String.format("Δ%.0f%%", Math.max(lengthDiff, widthDiff));
+                g2d.drawString(devLabel, labelX, labelY + 24);
             }
             
             detectionNum++;
@@ -1042,6 +1198,7 @@ public class ConfigurationManager {
     public void setPixelsPerMm(double pixelsPerMm) {
         this.pixelsPerMm = pixelsPerMm;
         System.out.println("Calibration set: " + pixelsPerMm + " pixels/mm");
+        saveSessionConfig(); // Auto-save
     }
     
     public void setTargetDimensions(double widthMm, double heightMm, double tolerancePercent) {
@@ -1049,6 +1206,7 @@ public class ConfigurationManager {
         this.targetHeight = heightMm;
         this.tolerance = tolerancePercent;
         System.out.println(String.format("Target: %.1fmm x %.1fmm ±%.1f%%", widthMm, heightMm, tolerancePercent));
+        saveSessionConfig(); // Auto-save
     }
     
     public double getPixelsPerMm() {
@@ -1057,6 +1215,124 @@ public class ConfigurationManager {
     
     public double[] getTargetDimensions() {
         return new double[]{targetWidth, targetHeight, tolerance};
+    }
+    
+    /**
+     * Load session configuration from file
+     */
+    public boolean loadSessionConfig() {
+        try {
+            File sessionFile = new File("session_config.json");
+            if (!sessionFile.exists()) {
+                return false;
+            }
+            
+            try (FileReader reader = new FileReader(sessionFile)) {
+                JsonObject json = gson.fromJson(reader, JsonObject.class);
+                
+                // Load color settings
+                if (json.has("color_segmentation")) {
+                    JsonObject colorSeg = json.getAsJsonObject("color_segmentation");
+                    config.colorLower = gson.fromJson(colorSeg.get("lower"), int[].class);
+                    config.colorUpper = gson.fromJson(colorSeg.get("upper"), int[].class);
+                }
+                
+                // Load detection rules
+                if (json.has("detection")) {
+                    JsonObject detection = json.getAsJsonObject("detection");
+                    config.minArea = detection.get("min_area").getAsInt();
+                    config.maxArea = detection.get("max_area").getAsInt();
+                    config.minCircularity = detection.get("min_circularity").getAsDouble();
+                    config.maxCircularity = detection.get("max_circularity").getAsDouble();
+                }
+                
+                // Load camera settings
+                if (json.has("camera")) {
+                    JsonObject camera = json.getAsJsonObject("camera");
+                    config.cameraIndex = camera.get("index").getAsInt();
+                    config.frameWidth = camera.get("width").getAsInt();
+                    config.frameHeight = camera.get("height").getAsInt();
+                    config.fps = camera.get("fps").getAsInt();
+                }
+                
+                // Load measurement settings
+                if (json.has("measurement")) {
+                    JsonObject measurement = json.getAsJsonObject("measurement");
+                    pixelsPerMm = measurement.get("pixels_per_mm").getAsDouble();
+                    targetWidth = measurement.get("target_width").getAsDouble();
+                    targetHeight = measurement.get("target_height").getAsDouble();
+                    tolerance = measurement.get("tolerance").getAsDouble();
+                }
+                
+                // Load processing settings
+                if (json.has("processing")) {
+                    JsonObject processing = json.getAsJsonObject("processing");
+                    config.morphKernelSize = processing.get("morph_kernel_size").getAsInt();
+                    config.enablePreprocessing = processing.get("enable_preprocessing").getAsBoolean();
+                }
+                
+                return true;
+            }
+        } catch (Exception e) {
+            System.err.println("Error loading session config: " + e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Save current configuration to session file
+     */
+    public void saveSessionConfig() {
+        try {
+            File sessionFile = new File("session_config.json");
+            try (FileWriter writer = new FileWriter(sessionFile)) {
+                JsonObject json = new JsonObject();
+                
+                // Save color settings
+                JsonObject colorSeg = new JsonObject();
+                JsonArray lower = new JsonArray();
+                JsonArray upper = new JsonArray();
+                for (int val : config.colorLower) lower.add(val);
+                for (int val : config.colorUpper) upper.add(val);
+                colorSeg.add("lower", lower);
+                colorSeg.add("upper", upper);
+                json.add("color_segmentation", colorSeg);
+                
+                // Save detection rules
+                JsonObject detection = new JsonObject();
+                detection.addProperty("min_area", config.minArea);
+                detection.addProperty("max_area", config.maxArea);
+                detection.addProperty("min_circularity", config.minCircularity);
+                detection.addProperty("max_circularity", config.maxCircularity);
+                json.add("detection", detection);
+                
+                // Save camera settings
+                JsonObject camera = new JsonObject();
+                camera.addProperty("index", config.cameraIndex);
+                camera.addProperty("width", config.frameWidth);
+                camera.addProperty("height", config.frameHeight);
+                camera.addProperty("fps", config.fps);
+                json.add("camera", camera);
+                
+                // Save measurement settings
+                JsonObject measurement = new JsonObject();
+                measurement.addProperty("pixels_per_mm", pixelsPerMm);
+                measurement.addProperty("target_width", targetWidth);
+                measurement.addProperty("target_height", targetHeight);
+                measurement.addProperty("tolerance", tolerance);
+                json.add("measurement", measurement);
+                
+                // Save processing settings
+                JsonObject processing = new JsonObject();
+                processing.addProperty("morph_kernel_size", config.morphKernelSize);
+                processing.addProperty("enable_preprocessing", config.enablePreprocessing);
+                json.add("processing", processing);
+                
+                gson.toJson(json, writer);
+            }
+        } catch (Exception e) {
+            System.err.println("Error saving session config: " + e.getMessage());
+        }
     }
     
     /**
