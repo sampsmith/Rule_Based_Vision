@@ -5,6 +5,8 @@ import java.awt.*;
 import java.awt.event.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.beans.PropertyChangeEvent;
+import java.beans.PropertyChangeListener;
 import javax.imageio.ImageIO;
 
 /**
@@ -39,6 +41,11 @@ public class InferencePanel extends JPanel {
     private double zoomLevel = 1.0;
     private Point viewOffset = new Point(0, 0);
     private Point lastDragPoint = null;
+    
+    // Background task management
+    private SwingWorker<BufferedImage, String> currentTask = null;
+    private JProgressBar progressBar;
+    private JLabel statusLabel;
     
     public InferencePanel(ConfigurationManager configManager) {
         this.configManager = configManager;
@@ -98,6 +105,15 @@ public class InferencePanel extends JPanel {
         infoLabel.setFont(new Font("SansSerif", Font.ITALIC, 12));
         infoLabel.setForeground(new Color(127, 140, 141));
         
+        // Progress bar and status label
+        progressBar = new JProgressBar();
+        progressBar.setStringPainted(true);
+        progressBar.setVisible(false);
+        progressBar.setPreferredSize(new Dimension(200, 20));
+        
+        statusLabel = new JLabel("Ready");
+        statusLabel.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        
         controlPanel.add(loadButton);
         controlPanel.add(runButton);
         controlPanel.add(Box.createHorizontalStrut(10));
@@ -112,6 +128,11 @@ public class InferencePanel extends JPanel {
         controlPanel.add(useROICheckbox);
         controlPanel.add(Box.createHorizontalStrut(10));
         controlPanel.add(infoLabel);
+        
+        // Add progress indicators
+        controlPanel.add(Box.createHorizontalStrut(10));
+        controlPanel.add(progressBar);
+        controlPanel.add(statusLabel);
         
         // Add ROI settings panel
         JPanel roiPanel = createROISettingsPanel();
@@ -422,8 +443,12 @@ public class InferencePanel extends JPanel {
             return;
         }
         
-        // Apply ROI settings if enabled
-        BufferedImage processImage = originalImage;
+        // Cancel any existing task
+        if (currentTask != null && !currentTask.isDone()) {
+            currentTask.cancel(true);
+        }
+        
+        // Validate ROI settings if enabled
         if (useROICheckbox.isSelected()) {
             int x = (int)roiXSpinner.getValue();
             int y = (int)roiYSpinner.getValue();
@@ -437,42 +462,100 @@ public class InferencePanel extends JPanel {
                     "Invalid ROI", JOptionPane.WARNING_MESSAGE);
                 return;
             }
-            
-            // Crop image to ROI
-            processImage = originalImage.getSubimage(x, y, width, height);
-            System.out.println("Using ROI: " + x + "," + y + " " + width + "x" + height);
         }
         
-        // Run segmentation
-        System.out.println("Running inference...");
-        resultImage = configManager.runSegmentation(processImage);
-        
-        if (resultImage != null) {
-            // If ROI was used, we need to composite the result back onto the original image
-            if (useROICheckbox.isSelected()) {
-                BufferedImage compositeResult = new BufferedImage(
-                    originalImage.getWidth(), originalImage.getHeight(), BufferedImage.TYPE_INT_ARGB);
-                Graphics2D g2d = compositeResult.createGraphics();
+        // Create background task
+        currentTask = new SwingWorker<BufferedImage, String>() {
+            @Override
+            protected BufferedImage doInBackground() throws Exception {
+                // Show progress
+                progressBar.setVisible(true);
+                progressBar.setIndeterminate(true);
+                progressBar.setString("Processing...");
+                statusLabel.setText("Running inference...");
                 
-                // Draw original image as background
-                g2d.drawImage(originalImage, 0, 0, null);
+                // Apply ROI settings if enabled
+                BufferedImage processImage = originalImage;
+                final boolean useROI = useROICheckbox.isSelected();
                 
-                // Draw ROI result at correct position
-                int x = (int)roiXSpinner.getValue();
-                int y = (int)roiYSpinner.getValue();
-                g2d.drawImage(resultImage, x, y, null);
+                if (useROI) {
+                    publish("Applying ROI...");
+                    int x = (int)roiXSpinner.getValue();
+                    int y = (int)roiYSpinner.getValue();
+                    int width = (int)roiWidthSpinner.getValue();
+                    int height = (int)roiHeightSpinner.getValue();
+                    processImage = originalImage.getSubimage(x, y, width, height);
+                }
                 
-                g2d.dispose();
-                resultImage = compositeResult;
+                // Run segmentation in background thread
+                publish("Segmenting image (this may take a moment)...");
+                BufferedImage result = configManager.runSegmentation(processImage);
+                
+                if (result == null) {
+                    throw new Exception("No learned model. Please teach the model first.");
+                }
+                
+                // If ROI was used, composite the result back onto the original image
+                if (useROI) {
+                    publish("Compositing results...");
+                    BufferedImage compositeResult = new BufferedImage(
+                        originalImage.getWidth(), originalImage.getHeight(), BufferedImage.TYPE_INT_ARGB);
+                    Graphics2D g2d = compositeResult.createGraphics();
+                    g2d.drawImage(originalImage, 0, 0, null);
+                    int x = (int)roiXSpinner.getValue();
+                    int y = (int)roiYSpinner.getValue();
+                    g2d.drawImage(result, x, y, null);
+                    g2d.dispose();
+                    result = compositeResult;
+                }
+                
+                return result;
             }
             
-            displayImage(resultImage);
-            System.out.println("Inference complete");
-        } else {
-            JOptionPane.showMessageDialog(this, 
-                "No learned model. Please go to Teach tab and teach the model first.",
-                "No Model", JOptionPane.WARNING_MESSAGE);
-        }
+            @Override
+            protected void process(java.util.List<String> chunks) {
+                // Update status text
+                if (!chunks.isEmpty()) {
+                    statusLabel.setText(chunks.get(chunks.size() - 1));
+                }
+            }
+            
+            @Override
+            protected void done() {
+                // Hide progress bar
+                progressBar.setVisible(false);
+                progressBar.setIndeterminate(false);
+                
+                try {
+                    if (isCancelled()) {
+                        statusLabel.setText("Cancelled");
+                        return;
+                    }
+                    
+                    BufferedImage result = get();
+                    if (result != null) {
+                        displayImage(result);
+                        statusLabel.setText("Inference complete");
+                        System.out.println("Inference complete");
+                    }
+                } catch (java.util.concurrent.ExecutionException e) {
+                    Throwable cause = e.getCause();
+                    statusLabel.setText("Error: " + cause.getMessage());
+                    JOptionPane.showMessageDialog(InferencePanel.this, 
+                        cause.getMessage(),
+                        "Inference Error", JOptionPane.ERROR_MESSAGE);
+                } catch (java.lang.InterruptedException e) {
+                    statusLabel.setText("Interrupted");
+                } finally {
+                    runButton.setEnabled(true);
+                    currentTask = null;
+                }
+            }
+        };
+        
+        // Disable button and start task
+        runButton.setEnabled(false);
+        currentTask.execute();
     }
     
     private void zoomIn() {

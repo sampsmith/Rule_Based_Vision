@@ -35,7 +35,7 @@ public class RecipePanel extends JPanel {
     // Measurement settings for recipes
     private JSpinner pixelsPerMmSpinner;
     private JSpinner targetWidthSpinner, targetHeightSpinner;
-    private JSpinner toleranceSpinner;
+    private JSpinner widthToleranceSpinner, heightToleranceSpinner;
     
     public RecipePanel(ConfigurationManager configManager) {
         this.configManager = configManager;
@@ -92,15 +92,17 @@ public class RecipePanel extends JPanel {
         pixelsPerMmSpinner = new JSpinner(new SpinnerNumberModel(1.0, 0.1, 50.0, 0.1));
         targetWidthSpinner = new JSpinner(new SpinnerNumberModel(100.0, 1.0, 1000.0, 1.0));
         targetHeightSpinner = new JSpinner(new SpinnerNumberModel(100.0, 1.0, 1000.0, 1.0));
-        toleranceSpinner = new JSpinner(new SpinnerNumberModel(10.0, 1.0, 50.0, 1.0));
+        widthToleranceSpinner = new JSpinner(new SpinnerNumberModel(5.0, 0.1, 50.0, 0.1));
+        heightToleranceSpinner = new JSpinner(new SpinnerNumberModel(5.0, 0.1, 50.0, 0.1));
         
         // Load current values from config manager
         pixelsPerMmSpinner.setValue(configManager.getPixelsPerMm());
         double[] targetDims = configManager.getTargetDimensions();
-        if (targetDims != null && targetDims.length >= 3) {
+        if (targetDims != null && targetDims.length >= 4) {
             targetWidthSpinner.setValue(targetDims[0]);
             targetHeightSpinner.setValue(targetDims[1]);
-            toleranceSpinner.setValue(targetDims[2]);
+            widthToleranceSpinner.setValue(targetDims[2]);
+            heightToleranceSpinner.setValue(targetDims[3]);
         }
     }
     
@@ -158,7 +160,7 @@ public class RecipePanel extends JPanel {
     }
     
     private JPanel createMeasurementSettingsPanel() {
-        JPanel panel = new JPanel(new GridLayout(2, 4, 10, 5));
+        JPanel panel = new JPanel(new GridLayout(3, 4, 10, 5));
         panel.setBorder(BorderFactory.createTitledBorder("📏 Measurement Settings (per recipe)"));
         
         panel.add(new JLabel("Pixels/mm:"));
@@ -168,8 +170,11 @@ public class RecipePanel extends JPanel {
         
         panel.add(new JLabel("Target Height (mm):"));
         panel.add(targetHeightSpinner);
-        panel.add(new JLabel("Tolerance (%):"));
-        panel.add(toleranceSpinner);
+        panel.add(new JLabel("Width Tolerance (mm):"));
+        panel.add(widthToleranceSpinner);
+        
+        panel.add(new JLabel("Height Tolerance (mm):"));
+        panel.add(heightToleranceSpinner);
         
         return panel;
     }
@@ -229,7 +234,8 @@ public class RecipePanel extends JPanel {
             pixelsPerMmSpinner.setValue(recipe.pixelsPerMm);
             targetWidthSpinner.setValue(recipe.targetWidth);
             targetHeightSpinner.setValue(recipe.targetHeight);
-            toleranceSpinner.setValue(recipe.tolerance);
+            widthToleranceSpinner.setValue(recipe.widthTolerance);
+            heightToleranceSpinner.setValue(recipe.heightTolerance);
             
             // Apply recipe to current configuration
             applyRecipe(recipe);
@@ -295,9 +301,8 @@ public class RecipePanel extends JPanel {
             
             details.append("=== Measurement Settings ===\n");
             details.append("Pixels per mm: ").append(recipe.pixelsPerMm).append("\n");
-            details.append("Target Width: ").append(recipe.targetWidth).append(" mm\n");
-            details.append("Target Height: ").append(recipe.targetHeight).append(" mm\n");
-            details.append("Tolerance: ").append(recipe.tolerance).append("%\n\n");
+            details.append("Target Width: ").append(recipe.targetWidth).append(" mm (±").append(recipe.widthTolerance).append(" mm)\n");
+            details.append("Target Height: ").append(recipe.targetHeight).append(" mm (±").append(recipe.heightTolerance).append(" mm)\n\n");
             
             recipeDetailsArea.setText(details.toString());
         }
@@ -341,7 +346,8 @@ public class RecipePanel extends JPanel {
         recipe.pixelsPerMm = (double)pixelsPerMmSpinner.getValue();
         recipe.targetWidth = (double)targetWidthSpinner.getValue();
         recipe.targetHeight = (double)targetHeightSpinner.getValue();
-        recipe.tolerance = (double)toleranceSpinner.getValue();
+        recipe.widthTolerance = (double)widthToleranceSpinner.getValue();
+        recipe.heightTolerance = (double)heightToleranceSpinner.getValue();
     }
     
     private void applyRecipe(DetectionRecipe recipe) {
@@ -360,7 +366,8 @@ public class RecipePanel extends JPanel {
         configManager.setTargetDimensions(
             recipe.targetWidth,
             recipe.targetHeight,
-            recipe.tolerance
+            recipe.widthTolerance,
+            recipe.heightTolerance
         );
     }
     
@@ -417,6 +424,6 @@ public class RecipePanel extends JPanel {
         // Measurement settings
         double pixelsPerMm;
         double targetWidth, targetHeight;
-        double tolerance;
+        double widthTolerance, heightTolerance;
     }
 }

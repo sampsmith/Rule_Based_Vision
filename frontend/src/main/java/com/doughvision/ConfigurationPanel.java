@@ -22,16 +22,13 @@ public class ConfigurationPanel extends JPanel {
     private JSpinner satMinSpinner, satMaxSpinner;
     private JSpinner valMinSpinner, valMaxSpinner;
     
-    private JSpinner minAreaSpinner, maxAreaSpinner;
-    private JSpinner minCircularitySpinner, maxCircularitySpinner;
-    
     private JSpinner cameraIndexSpinner;
     private JSpinner widthSpinner, heightSpinner, fpsSpinner;
     
     // Measurement settings
     private JSpinner pixelsPerMmSpinner;
     private JSpinner targetWidthSpinner, targetHeightSpinner;
-    private JSpinner toleranceSpinner;
+    private JSpinner widthToleranceSpinner, heightToleranceSpinner;
     
     // Template management
     private JList<String> templateList;
@@ -61,12 +58,6 @@ public class ConfigurationPanel extends JPanel {
         valMinSpinner = new JSpinner(new SpinnerNumberModel(50, 0, 255, 1));
         valMaxSpinner = new JSpinner(new SpinnerNumberModel(255, 0, 255, 1));
         
-        // Detection rules spinners
-        minAreaSpinner = new JSpinner(new SpinnerNumberModel(500, 0, 100000, 100));
-        maxAreaSpinner = new JSpinner(new SpinnerNumberModel(50000, 0, 1000000, 1000));
-        minCircularitySpinner = new JSpinner(new SpinnerNumberModel(0.3, 0.0, 1.0, 0.05));
-        maxCircularitySpinner = new JSpinner(new SpinnerNumberModel(1.0, 0.0, 1.0, 0.05));
-        
         // Camera spinners
         cameraIndexSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 10, 1));
         widthSpinner = new JSpinner(new SpinnerNumberModel(640, 320, 1920, 10));
@@ -77,7 +68,8 @@ public class ConfigurationPanel extends JPanel {
         pixelsPerMmSpinner = new JSpinner(new SpinnerNumberModel(1.0, 0.1, 50.0, 0.1));
         targetWidthSpinner = new JSpinner(new SpinnerNumberModel(100.0, 1.0, 1000.0, 1.0));
         targetHeightSpinner = new JSpinner(new SpinnerNumberModel(100.0, 1.0, 1000.0, 1.0));
-        toleranceSpinner = new JSpinner(new SpinnerNumberModel(10.0, 1.0, 50.0, 1.0));
+        widthToleranceSpinner = new JSpinner(new SpinnerNumberModel(5.0, 0.1, 50.0, 0.1));
+        heightToleranceSpinner = new JSpinner(new SpinnerNumberModel(5.0, 0.1, 50.0, 0.1));
         
         // Buttons
         applyButton = new JButton("Apply Changes");
@@ -118,10 +110,6 @@ public class ConfigurationPanel extends JPanel {
         
         // Color segmentation section
         mainPanel.add(createColorSegmentationPanel());
-        mainPanel.add(Box.createVerticalStrut(15));
-        
-        // Detection rules section
-        mainPanel.add(createDetectionRulesPanel());
         mainPanel.add(Box.createVerticalStrut(15));
         
         // Camera settings section
@@ -170,23 +158,6 @@ public class ConfigurationPanel extends JPanel {
         return panel;
     }
     
-    private JPanel createDetectionRulesPanel() {
-        JPanel panel = new JPanel(new GridLayout(2, 4, 10, 5));
-        panel.setBorder(BorderFactory.createTitledBorder("Detection Rules"));
-        
-        panel.add(new JLabel("Min Area (px):"));
-        panel.add(minAreaSpinner);
-        panel.add(new JLabel("Max Area (px):"));
-        panel.add(maxAreaSpinner);
-        
-        panel.add(new JLabel("Min Circularity:"));
-        panel.add(minCircularitySpinner);
-        panel.add(new JLabel("Max Circularity:"));
-        panel.add(maxCircularitySpinner);
-        
-        return panel;
-    }
-    
     private JPanel createCameraSettingsPanel() {
         JPanel panel = new JPanel(new GridLayout(2, 4, 10, 5));
         panel.setBorder(BorderFactory.createTitledBorder("Camera Settings"));
@@ -205,7 +176,7 @@ public class ConfigurationPanel extends JPanel {
     }
     
     private JPanel createMeasurementSettingsPanel() {
-        JPanel panel = new JPanel(new GridLayout(2, 4, 10, 5));
+        JPanel panel = new JPanel(new GridLayout(3, 4, 10, 5));
         panel.setBorder(BorderFactory.createTitledBorder("Measurement Settings (Pass/Fail Criteria)"));
         
         panel.add(new JLabel("Pixels per mm:"));
@@ -215,8 +186,11 @@ public class ConfigurationPanel extends JPanel {
         
         panel.add(new JLabel("Target Height (mm):"));
         panel.add(targetHeightSpinner);
-        panel.add(new JLabel("Tolerance (%):"));
-        panel.add(toleranceSpinner);
+        panel.add(new JLabel("Width Tolerance (mm):"));
+        panel.add(widthToleranceSpinner);
+        
+        panel.add(new JLabel("Height Tolerance (mm):"));
+        panel.add(heightToleranceSpinner);
         
         return panel;
     }
@@ -273,7 +247,8 @@ public class ConfigurationPanel extends JPanel {
             template.pixelsPerMm = (double)pixelsPerMmSpinner.getValue();
             template.targetWidth = (double)targetWidthSpinner.getValue();
             template.targetHeight = (double)targetHeightSpinner.getValue();
-            template.tolerance = (double)toleranceSpinner.getValue();
+            template.widthTolerance = (double)widthToleranceSpinner.getValue();
+            template.heightTolerance = (double)heightToleranceSpinner.getValue();
             
             templates.add(template);
             updateTemplateListModel();
@@ -294,7 +269,8 @@ public class ConfigurationPanel extends JPanel {
             pixelsPerMmSpinner.setValue(template.pixelsPerMm);
             targetWidthSpinner.setValue(template.targetWidth);
             targetHeightSpinner.setValue(template.targetHeight);
-            toleranceSpinner.setValue(template.tolerance);
+            widthToleranceSpinner.setValue(template.widthTolerance);
+            heightToleranceSpinner.setValue(template.heightTolerance);
             
             JOptionPane.showMessageDialog(this,
                 "Template '" + template.name + "' loaded successfully!",
@@ -374,7 +350,8 @@ public class ConfigurationPanel extends JPanel {
         double pixelsPerMm;
         double targetWidth;
         double targetHeight;
-        double tolerance;
+        double widthTolerance;
+        double heightTolerance;
     }
     
     private void loadCurrentConfig() {
@@ -393,12 +370,6 @@ public class ConfigurationPanel extends JPanel {
             valMaxSpinner.setValue(config.colorUpper[2]);
         }
         
-        // Load detection rules
-        minAreaSpinner.setValue(config.minArea);
-        maxAreaSpinner.setValue(config.maxArea);
-        minCircularitySpinner.setValue(config.minCircularity);
-        maxCircularitySpinner.setValue(config.maxCircularity);
-        
         // Load camera settings
         cameraIndexSpinner.setValue(config.cameraIndex);
         widthSpinner.setValue(config.frameWidth);
@@ -408,10 +379,11 @@ public class ConfigurationPanel extends JPanel {
         // Load measurement settings
         pixelsPerMmSpinner.setValue(configManager.getPixelsPerMm());
         double[] targetDims = configManager.getTargetDimensions();
-        if (targetDims != null && targetDims.length >= 3) {
+        if (targetDims != null && targetDims.length >= 4) {
             targetWidthSpinner.setValue(targetDims[0]);
             targetHeightSpinner.setValue(targetDims[1]);
-            toleranceSpinner.setValue(targetDims[2]);
+            widthToleranceSpinner.setValue(targetDims[2]);
+            heightToleranceSpinner.setValue(targetDims[3]);
         }
     }
     
@@ -422,15 +394,13 @@ public class ConfigurationPanel extends JPanel {
             (int)hueMaxSpinner.getValue(), (int)satMaxSpinner.getValue(), (int)valMaxSpinner.getValue()
         );
         
-        configManager.setMinArea((int)minAreaSpinner.getValue());
-        configManager.setMaxArea((int)maxAreaSpinner.getValue());
-        
         // Apply measurement settings
         configManager.setPixelsPerMm((double)pixelsPerMmSpinner.getValue());
         configManager.setTargetDimensions(
             (double)targetWidthSpinner.getValue(),
             (double)targetHeightSpinner.getValue(),
-            (double)toleranceSpinner.getValue()
+            (double)widthToleranceSpinner.getValue(),
+            (double)heightToleranceSpinner.getValue()
         );
         
         JOptionPane.showMessageDialog(this, "Configuration applied successfully",

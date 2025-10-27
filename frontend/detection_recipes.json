@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Greggs",
+    "description": "Created from current configuration",
+    "dateCreated": "Mon Oct 27 20:59:39 GMT 2025",
+    "dateModified": "Mon Oct 27 21:34:22 GMT 2025",
+    "hueMin": 20,
+    "satMin": 50,
+    "valMin": 50,
+    "hueMax": 40,
+    "satMax": 255,
+    "valMax": 255,
+    "minArea": 500,
+    "maxArea": 50000,
+    "minCircularity": 0.3,
+    "maxCircularity": 1.0,
+    "pixelsPerMm": 1.0,
+    "targetWidth": 84.0,
+    "targetHeight": 480.0,
+    "widthTolerance": 5.0,
+    "heightTolerance": 20.0
+  }
+]

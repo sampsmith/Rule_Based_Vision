@@ -8,6 +8,7 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Teach mode panel for defining ROIs and detection regions
@@ -36,6 +37,10 @@ public class TeachModePanel extends JPanel {
     private DefaultListModel<String> regionListModel;
     private JTextField labelField;
     private String currentLabel = "dough";
+    
+    // Background task management
+    private SwingWorker<Boolean, String> currentTeachTask = null;
+    private SwingWorker<BufferedImage, String> currentSegmentTask = null;
     
     public TeachModePanel(ConfigurationManager configManager) {
         this.configManager = configManager;
@@ -207,23 +212,69 @@ public class TeachModePanel extends JPanel {
             return;
         }
         
-        // Teach the model using annotated regions
-        boolean success = configManager.teachModel(image, regions);
-        
-        if (success) {
-            JOptionPane.showMessageDialog(this, 
-                "Model trained successfully with " + regions.size() + " example(s)!\n" +
-                "Rule-based segmentation model updated.", 
-                "Success", JOptionPane.INFORMATION_MESSAGE);
-            
-            // Clear annotations after successful teaching
-            canvas.clearAnnotations();
-            regionListModel.clear();
-        } else {
-            JOptionPane.showMessageDialog(this, 
-                "Failed to teach model. Check console for errors.", 
-                "Error", JOptionPane.ERROR_MESSAGE);
+        // Cancel any existing task
+        if (currentTeachTask != null && !currentTeachTask.isDone()) {
+            currentTeachTask.cancel(true);
         }
+        
+        // Create background task for teaching
+        currentTeachTask = new SwingWorker<Boolean, String>() {
+            @Override
+            protected Boolean doInBackground() throws Exception {
+                publish("Teaching model with " + regions.size() + " region(s)...");
+                return configManager.teachModel(image, regions);
+            }
+            
+            @Override
+            protected void process(java.util.List<String> chunks) {
+                // Could add progress updates here if needed
+            }
+            
+            @Override
+            protected void done() {
+                try {
+                    if (isCancelled()) {
+                        return;
+                    }
+                    
+                    Boolean success = get();
+                    if (success) {
+                        JOptionPane.showMessageDialog(TeachModePanel.this, 
+                            "Model trained successfully with " + regions.size() + " example(s)!\n" +
+                            "Rule-based segmentation model updated.", 
+                            "Success", JOptionPane.INFORMATION_MESSAGE);
+                        
+                        // Clear annotations after successful teaching
+                        canvas.clearAnnotations();
+                        regionListModel.clear();
+                    } else {
+                        JOptionPane.showMessageDialog(TeachModePanel.this, 
+                            "Failed to teach model. Check console for errors.", 
+                            "Error", JOptionPane.ERROR_MESSAGE);
+                    }
+                } catch (ExecutionException e) {
+                    JOptionPane.showMessageDialog(TeachModePanel.this, 
+                        "Error teaching model: " + e.getCause().getMessage(), 
+                        "Error", JOptionPane.ERROR_MESSAGE);
+                } catch (InterruptedException e) {
+                    // Cancelled
+                } finally {
+                    currentTeachTask = null;
+                }
+            }
+        };
+        
+        // Disable button and start task
+        teachModelButton.setEnabled(false);
+        currentTeachTask.execute();
+        
+        // Re-enable button after completion
+        currentTeachTask.addPropertyChangeListener(evt -> {
+            if ("state".equals(evt.getPropertyName()) && 
+                evt.getNewValue() == SwingWorker.StateValue.DONE) {
+                teachModelButton.setEnabled(true);
+            }
+        });
     }
     
     private void runSegmentation() {
@@ -235,15 +286,62 @@ public class TeachModePanel extends JPanel {
             return;
         }
         
-        // Run segmentation and display results
-        BufferedImage result = configManager.runSegmentation(image);
-        if (result != null) {
-            canvas.setSegmentationResult(result);
-        } else {
-            JOptionPane.showMessageDialog(this, 
-                "Segmentation failed. Make sure the model is trained.", 
-                "Error", JOptionPane.ERROR_MESSAGE);
+        // Cancel any existing task
+        if (currentSegmentTask != null && !currentSegmentTask.isDone()) {
+            currentSegmentTask.cancel(true);
         }
+        
+        // Create background task for segmentation
+        currentSegmentTask = new SwingWorker<BufferedImage, String>() {
+            @Override
+            protected BufferedImage doInBackground() throws Exception {
+                publish("Running segmentation...");
+                BufferedImage result = configManager.runSegmentation(image);
+                if (result == null) {
+                    throw new Exception("No learned model. Please teach the model first.");
+                }
+                return result;
+            }
+            
+            @Override
+            protected void process(java.util.List<String> chunks) {
+                // Could add progress updates here
+            }
+            
+            @Override
+            protected void done() {
+                try {
+                    if (isCancelled()) {
+                        return;
+                    }
+                    
+                    BufferedImage result = get();
+                    if (result != null) {
+                        canvas.setSegmentationResult(result);
+                    }
+                } catch (ExecutionException e) {
+                    JOptionPane.showMessageDialog(TeachModePanel.this, 
+                        "Segmentation failed: " + e.getCause().getMessage(), 
+                        "Error", JOptionPane.ERROR_MESSAGE);
+                } catch (InterruptedException e) {
+                    // Cancelled
+                } finally {
+                    currentSegmentTask = null;
+                }
+            }
+        };
+        
+        // Disable button and start task
+        runSegmentationButton.setEnabled(false);
+        currentSegmentTask.execute();
+        
+        // Re-enable button after completion
+        currentSegmentTask.addPropertyChangeListener(evt -> {
+            if ("state".equals(evt.getPropertyName()) && 
+                evt.getNewValue() == SwingWorker.StateValue.DONE) {
+                runSegmentationButton.setEnabled(true);
+            }
+        });
     }
     
     /**

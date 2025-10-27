@@ -13,6 +13,9 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferInt;
+import java.awt.image.Raster;
+import java.awt.image.WritableRaster;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -27,16 +30,18 @@ public class ConfigurationManager {
     
     private VisionConfiguration config;
     private Gson gson;
+    private final Object lock = new Object(); // For thread synchronization
     private List<TeachModePanel.AnnotatedRegion> trainingData;
     private Map<String, LabelRule> learnedRules;
     private List<String> ignoreLabels;
-    private boolean fastMode = false;  // Fast inference for constrained hardware
+    private volatile boolean fastMode = false;  // Fast inference for constrained hardware
     
     // Calibration and measurement
     private double pixelsPerMm = 1.0;  // Default: 1px = 1mm (uncalibrated)
     private double targetWidth = 100.0;  // Target width in mm
     private double targetHeight = 100.0; // Target height in mm
-    private double tolerance = 10.0;     // Tolerance percentage (e.g., 10%)
+    private double widthTolerance = 5.0;  // Width tolerance in mm (±)
+    private double heightTolerance = 5.0; // Height tolerance in mm (±)
     
     public ConfigurationManager() {
         this.gson = new GsonBuilder().setPrettyPrinting().create();
@@ -175,7 +180,8 @@ public class ConfigurationManager {
             measurement.addProperty("pixels_per_mm", pixelsPerMm);
             measurement.addProperty("target_width_mm", targetWidth);
             measurement.addProperty("target_height_mm", targetHeight);
-            measurement.addProperty("tolerance_percent", tolerance);
+            measurement.addProperty("width_tolerance", widthTolerance);
+            measurement.addProperty("height_tolerance", heightTolerance);
             json.add("measurement", measurement);
             
             gson.toJson(json, writer);
@@ -188,33 +194,43 @@ public class ConfigurationManager {
     
     // Getters and setters
     public void setColorRange(int h1, int s1, int v1, int h2, int s2, int v2) {
-        config.colorLower = new int[]{h1, s1, v1};
-        config.colorUpper = new int[]{h2, s2, v2};
+        synchronized (lock) {
+            config.colorLower = new int[]{h1, s1, v1};
+            config.colorUpper = new int[]{h2, s2, v2};
+        }
         saveSessionConfig(); // Auto-save
     }
     
     public void setMinArea(int area) {
-        config.minArea = area;
+        synchronized (lock) {
+            config.minArea = area;
+        }
         saveSessionConfig(); // Auto-save
     }
     
     public void setMaxArea(int area) {
-        config.maxArea = area;
+        synchronized (lock) {
+            config.maxArea = area;
+        }
         saveSessionConfig(); // Auto-save
     }
     
     public void setROIRegions(List<Rectangle> regions) {
-        if (!regions.isEmpty()) {
-            Rectangle r = regions.get(0); // Use first region as main ROI
-            config.roiX = r.x;
-            config.roiY = r.y;
-            config.roiWidth = r.width;
-            config.roiHeight = r.height;
+        synchronized (lock) {
+            if (!regions.isEmpty()) {
+                Rectangle r = regions.get(0); // Use first region as main ROI
+                config.roiX = r.x;
+                config.roiY = r.y;
+                config.roiWidth = r.width;
+                config.roiHeight = r.height;
+            }
         }
     }
     
     public void setAnnotatedRegions(List<TeachModePanel.AnnotatedRegion> regions) {
-        this.trainingData = new ArrayList<>(regions);
+        synchronized (lock) {
+            this.trainingData = new ArrayList<>(regions);
+        }
     }
     
     /**
@@ -229,7 +245,8 @@ public class ConfigurationManager {
             
             // Separate positive samples and ignore samples
             Map<String, List<ColorSample>> labelSamples = new HashMap<>();
-            ignoreLabels.clear();
+            List<String> newIgnoreLabels = new ArrayList<>();
+            Map<String, LabelRule> newLearnedRules = new HashMap<>();
             
             // Collect samples from annotated regions
             for (TeachModePanel.AnnotatedRegion region : regions) {
@@ -239,7 +256,7 @@ public class ConfigurationManager {
                 String lowerLabel = region.label.toLowerCase();
                 if (lowerLabel.contains("ignore") || lowerLabel.contains("background") || 
                     lowerLabel.contains("reject") || lowerLabel.contains("exclude")) {
-                    ignoreLabels.add(region.label);
+                    newIgnoreLabels.add(region.label);
                     System.out.println("Marking '" + region.label + "' as IGNORE label");
                 }
                 
@@ -252,12 +269,18 @@ public class ConfigurationManager {
                 List<ColorSample> samples = entry.getValue();
                 
                 LabelRule rule = computeRobustRule(label, samples);
-                learnedRules.put(label, rule);
+                newLearnedRules.put(label, rule);
                 
-                String type = ignoreLabels.contains(label) ? "IGNORE" : "DETECT";
+                String type = newIgnoreLabels.contains(label) ? "IGNORE" : "DETECT";
                 System.out.println("Learned " + type + " rule for '" + label + "': HSV range [" +
                     rule.hMin + "," + rule.sMin + "," + rule.vMin + "] to [" +
                     rule.hMax + "," + rule.sMax + "," + rule.vMax + "] (" + samples.size() + " samples)");
+            }
+            
+            // Thread-safe update of shared state
+            synchronized (lock) {
+                ignoreLabels = newIgnoreLabels;
+                learnedRules = newLearnedRules;
             }
             
             // Save rules to file
@@ -293,12 +316,8 @@ public class ConfigurationManager {
                 
                 pixelsInside++;
                 
-                int rgb = image.getRGB(x, y);
-                int r = (rgb >> 16) & 0xFF;
-                int g = (rgb >> 8) & 0xFF;
-                int b = rgb & 0xFF;
-                
-                int[] hsv = rgbToHsv(r, g, b);
+                int[] rgb = getPixelRGB(image, x, y);
+                int[] hsv = rgbToHsv(rgb[0], rgb[1], rgb[2]);
                 samples.add(new ColorSample(hsv[0], hsv[1], hsv[2]));
             }
         }
@@ -451,25 +470,25 @@ public class ConfigurationManager {
                 
                 for (int ky = -2; ky <= 2; ky++) {
                     for (int kx = -2; kx <= 2; kx++) {
-                        int rgb = image.getRGB(x + kx, y + ky);
+                        int[] rgb = getPixelRGB(image, x + kx, y + ky);
                         double weight = kernel[ky + 2][kx + 2] / kernelSum;
                         
-                        r += ((rgb >> 16) & 0xFF) * weight;
-                        g += ((rgb >> 8) & 0xFF) * weight;
-                        b += (rgb & 0xFF) * weight;
+                        r += rgb[0] * weight;
+                        g += rgb[1] * weight;
+                        b += rgb[2] * weight;
                     }
                 }
                 
-                int newRgb = (clamp((int)r) << 16) | (clamp((int)g) << 8) | clamp((int)b);
-                result.setRGB(x, y, newRgb);
+                setPixelRGB(result, x, y, clamp((int)r), clamp((int)g), clamp((int)b));
             }
         }
         
         // Copy edges directly
-        for (int y = 0; y < height; y++) {
+            for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 if (x < 2 || x >= width - 2 || y < 2 || y >= height - 2) {
-                    result.setRGB(x, y, image.getRGB(x, y));
+                    int[] rgb = getPixelRGB(image, x, y);
+                    setPixelRGB(result, x, y, rgb[0], rgb[1], rgb[2]);
                 }
             }
         }
@@ -490,38 +509,33 @@ public class ConfigurationManager {
         int minB = 255, maxB = 0;
         
         for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int rgb = image.getRGB(x, y);
-                int r = (rgb >> 16) & 0xFF;
-                int g = (rgb >> 8) & 0xFF;
-                int b = rgb & 0xFF;
+                        for (int x = 0; x < width; x++) {
+                        int[] rgb = getPixelRGB(image, x, y);
+                        minR = Math.min(minR, rgb[0]);
+                        maxR = Math.max(maxR, rgb[0]);
+                        minG = Math.min(minG, rgb[1]);
+                        maxG = Math.max(maxG, rgb[1]);
+                        minB = Math.min(minB, rgb[2]);
+                        maxB = Math.max(maxB, rgb[2]);
+                    }
+                }
                 
-                minR = Math.min(minR, r);
-                maxR = Math.max(maxR, r);
-                minG = Math.min(minG, g);
-                maxG = Math.max(maxG, g);
-                minB = Math.min(minB, b);
-                maxB = Math.max(maxB, b);
-            }
-        }
-        
-        // Apply histogram stretching
-        BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int rgb = image.getRGB(x, y);
-                int r = (rgb >> 16) & 0xFF;
-                int g = (rgb >> 8) & 0xFF;
-                int b = rgb & 0xFF;
+                // Apply histogram stretching
+                BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+                
+                for (int y = 0; y < height; y++) {
+                    for (int x = 0; x < width; x++) {
+                        int[] rgb = getPixelRGB(image, x, y);
+                        int r = rgb[0];
+                        int g = rgb[1];
+                        int b = rgb[2];
                 
                 // Stretch each channel independently
                 int newR = maxR > minR ? (r - minR) * 255 / (maxR - minR) : r;
                 int newG = maxG > minG ? (g - minG) * 255 / (maxG - minG) : g;
                 int newB = maxB > minB ? (b - minB) * 255 / (maxB - minB) : b;
                 
-                int newRgb = (clamp(newR) << 16) | (clamp(newG) << 8) | clamp(newB);
-                result.setRGB(x, y, newRgb);
+                setPixelRGB(result, x, y, clamp(newR), clamp(newG), clamp(newB));
             }
         }
         
@@ -536,27 +550,78 @@ public class ConfigurationManager {
     }
     
     /**
+     * Get pixel as RGB array [r, g, b] - optimized version using direct pixel access
+     */
+    private int[] getPixelRGB(BufferedImage image, int x, int y) {
+        if (image.getType() == BufferedImage.TYPE_INT_RGB || image.getType() == BufferedImage.TYPE_INT_ARGB) {
+            DataBufferInt buffer = (DataBufferInt) image.getRaster().getDataBuffer();
+            int[] pixels = buffer.getData();
+            int width = image.getWidth();
+            int rgb = pixels[y * width + x];
+            
+            return new int[]{
+                (rgb >> 16) & 0xFF,
+                (rgb >> 8) & 0xFF,
+                rgb & 0xFF
+            };
+        } else {
+            // Fallback for other image types
+            int rgb = image.getRGB(x, y);
+            return new int[]{
+                (rgb >> 16) & 0xFF,
+                (rgb >> 8) & 0xFF,
+                rgb & 0xFF
+            };
+        }
+    }
+    
+    /**
+     * Set pixel RGB - optimized version using direct pixel access
+     */
+    private void setPixelRGB(BufferedImage image, int x, int y, int r, int g, int b) {
+        if (image.getType() == BufferedImage.TYPE_INT_RGB || image.getType() == BufferedImage.TYPE_INT_ARGB) {
+            DataBufferInt buffer = (DataBufferInt) image.getRaster().getDataBuffer();
+            int[] pixels = buffer.getData();
+            int width = image.getWidth();
+            int argb = 0xFF000000 | (r << 16) | (g << 8) | b;
+            pixels[y * width + x] = argb;
+        } else {
+            // Fallback for other image types
+            int argb = 0xFF000000 | (r << 16) | (g << 8) | b;
+            image.setRGB(x, y, argb);
+        }
+    }
+    
+    /**
      * Fast image resize using nearest neighbor (fast) or bilinear (quality)
      */
     private BufferedImage resizeImage(BufferedImage image, int width, int height) {
         BufferedImage resized = new BufferedImage(width, height, image.getType());
-        Graphics2D g = resized.createGraphics();
-        
-        // Use fast rendering for speed
-        if (fastMode) {
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
-            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
-        } else {
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        Graphics2D g = null;
+        try {
+            g = resized.createGraphics();
+            
+            // Use fast rendering for speed
+            if (fastMode) {
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
+                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED);
+            } else {
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            }
+            
+            g.drawImage(image, 0, 0, width, height, null);
+        } finally {
+            if (g != null) {
+                g.dispose();
+            }
         }
-        
-        g.drawImage(image, 0, 0, width, height, null);
-        g.dispose();
         return resized;
     }
     
     public void setFastMode(boolean enabled) {
-        this.fastMode = enabled;
+        synchronized (lock) {
+            this.fastMode = enabled;
+        }
         System.out.println("Fast mode: " + (enabled ? "ENABLED" : "DISABLED"));
     }
     
@@ -564,7 +629,21 @@ public class ConfigurationManager {
      * Run segmentation on image with mask generation
      */
     public BufferedImage runSegmentation(BufferedImage image) {
-        if (learnedRules.isEmpty()) {
+        // Thread-safe access to learnedRules and fastMode
+        boolean isEmpty;
+        boolean isFastMode;
+        Map<String, LabelRule> rulesCopy;
+        List<String> ignoreCopy;
+        
+        synchronized (lock) {
+            isEmpty = learnedRules.isEmpty();
+            isFastMode = fastMode;
+            // Make defensive copies for thread safety
+            rulesCopy = new HashMap<>(learnedRules);
+            ignoreCopy = new ArrayList<>(ignoreLabels);
+        }
+        
+        if (isEmpty) {
             System.err.println("No learned rules. Please teach the model first.");
             return null;
         }
@@ -575,7 +654,7 @@ public class ConfigurationManager {
             // Fast mode: downsample for speed
             BufferedImage processImage = image;
             double scale = 1.0;
-            if (fastMode && (image.getWidth() > 1280 || image.getHeight() > 960)) {
+            if (isFastMode && (image.getWidth() > 1280 || image.getHeight() > 960)) {
                 scale = Math.min(1280.0 / image.getWidth(), 960.0 / image.getHeight());
                 int newW = (int)(image.getWidth() * scale);
                 int newH = (int)(image.getHeight() * scale);
@@ -597,16 +676,12 @@ public class ConfigurationManager {
             // First pass: classify each pixel (use preprocessed image)
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    int rgb = processed.getRGB(x, y);
-                    int r = (rgb >> 16) & 0xFF;
-                    int g = (rgb >> 8) & 0xFF;
-                    int b = rgb & 0xFF;
-                    
-                    int[] hsv = rgbToHsv(r, g, b);
+                    int[] rgb = getPixelRGB(processed, x, y);
+                    int[] hsv = rgbToHsv(rgb[0], rgb[1], rgb[2]);
                     
                     // Check ignore labels first
-                    for (String ignoreLabel : ignoreLabels) {
-                        LabelRule rule = learnedRules.get(ignoreLabel);
+                    for (String ignoreLabel : ignoreCopy) {
+                        LabelRule rule = rulesCopy.get(ignoreLabel);
                         if (rule != null && matchesRule(hsv, rule)) {
                             ignoreMask[y][x] = true;
                             break;
@@ -615,8 +690,8 @@ public class ConfigurationManager {
                     
                     // If not ignored, check detection labels
                     if (!ignoreMask[y][x]) {
-                        for (Map.Entry<String, LabelRule> entry : learnedRules.entrySet()) {
-                            if (ignoreLabels.contains(entry.getKey())) {
+                        for (Map.Entry<String, LabelRule> entry : rulesCopy.entrySet()) {
+                            if (ignoreCopy.contains(entry.getKey())) {
                                 continue; // Skip ignore labels
                             }
                             
@@ -632,8 +707,8 @@ public class ConfigurationManager {
             
             // Apply morphological operations to clean up mask
             // Use smaller kernels in fast mode
-            int closeKernel = fastMode ? 2 : 3;
-            int openKernel = fastMode ? 1 : 2;
+            int closeKernel = isFastMode ? 2 : 3;
+            int openKernel = isFastMode ? 1 : 2;
             detectionMask = morphologicalClose(detectionMask, closeKernel);
             detectionMask = morphologicalOpen(detectionMask, openKernel);
             
@@ -642,40 +717,46 @@ public class ConfigurationManager {
             
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    int rgb = image.getRGB(x, y);
-                    int r = (rgb >> 16) & 0xFF;
-                    int g = (rgb >> 8) & 0xFF;
-                    int b = rgb & 0xFF;
+                    int[] rgb = getPixelRGB(image, x, y);
+                    int r = rgb[0];
+                    int g = rgb[1];
+                    int b = rgb[2];
                     
                     if (detectionMask[y][x]) {
                         // Highlight detected regions in green
                         int highlightR = Math.min(255, r + 50);
                         int highlightG = Math.min(255, g + 100);
                         int highlightB = b;
-                        result.setRGB(x, y, 0xFF000000 | (highlightR << 16) | (highlightG << 8) | highlightB);
+                        setPixelRGB(result, x, y, highlightR, highlightG, highlightB);
                     } else if (ignoreMask[y][x]) {
                         // Dim ignored regions
-                        result.setRGB(x, y, 0xFF000000 | (r/2 << 16) | (g/2 << 8) | (b/2));
+                        setPixelRGB(result, x, y, r/2, g/2, b/2);
                     } else {
                         // Keep original for unclassified
-                        result.setRGB(x, y, 0xFF000000 | (r << 16) | (g << 8) | b);
+                        setPixelRGB(result, x, y, r, g, b);
                     }
                 }
             }
             
-            // Draw contours around detected regions
-            result = drawContours(result, detectionMask);
-            
-            long elapsed = System.currentTimeMillis() - startTime;
-            int detectedPixels = countTrue(detectionMask);
-            System.out.println("Segmentation complete in " + elapsed + "ms. Detected pixels: " + detectedPixels);
-            
-            // If we downsampled, scale back up
-            if (fastMode && scale < 1.0) {
-                result = resizeImage(result, image.getWidth(), image.getHeight());
+            // Draw contours around detected regions with proper resource management
+            Graphics2D g2d = null;
+            try {
+                result = drawContours(result, detectionMask);
+                
+                long elapsed = System.currentTimeMillis() - startTime;
+                int detectedPixels = countTrue(detectionMask);
+                System.out.println("Segmentation complete in " + elapsed + "ms. Detected pixels: " + detectedPixels);
+                
+                // If we downsampled, scale back up
+                if (isFastMode && scale < 1.0) {
+                    result = resizeImage(result, image.getWidth(), image.getHeight());
+                }
+                
+                return result;
+            } finally {
+                // Ensure cleanup (though g2d should be disposed in drawContours)
+                // This is defense-in-depth
             }
-            
-            return result;
         } catch (Exception e) {
             e.printStackTrace();
             return null;
@@ -956,12 +1037,15 @@ public class ConfigurationManager {
     
     /**
      * Draw contours around detected regions with measurements
+     * Uses proper resource management with try-finally
      */
     private BufferedImage drawContours(BufferedImage image, boolean[][] mask) {
         int height = mask.length;
         int width = mask[0].length;
         BufferedImage result = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
-        Graphics2D g2d = result.createGraphics();
+        Graphics2D g2d = null;
+        try {
+            g2d = result.createGraphics();
         
         // Copy original
         g2d.drawImage(image, 0, 0, null);
@@ -977,7 +1061,7 @@ public class ConfigurationManager {
                     boolean isEdge = !mask[y-1][x] || !mask[y+1][x] || 
                                      !mask[y][x-1] || !mask[y][x+1];
                     if (isEdge) {
-                        result.setRGB(x, y, 0xFF00FF00); // Bright green contour
+                        setPixelRGB(result, x, y, 0, 255, 0); // Bright green contour
                     }
                 }
             }
@@ -1008,19 +1092,37 @@ public class ConfigurationManager {
             double lengthMm = lengthPx / pixelsPerMm;
             double widthMm = widthPx / pixelsPerMm;
             
-            // Check pass/fail based on tolerance
+            // Check pass/fail based on separate width and height tolerances (in mm)
             // Compare against target dimensions (larger vs larger, smaller vs smaller)
             double lengthTarget = Math.max(targetWidth, targetHeight);
             double widthTarget = Math.min(targetWidth, targetHeight);
+            double lengthTolerance = Math.max(widthTolerance, heightTolerance);
+            double widthToleranceUsed = Math.min(widthTolerance, heightTolerance);
             
-            double lengthDiff = Math.abs(lengthMm - lengthTarget) / lengthTarget * 100.0;
-            double widthDiff = Math.abs(widthMm - widthTarget) / widthTarget * 100.0;
-            boolean pass = (lengthDiff <= tolerance && widthDiff <= tolerance);
+            double lengthDiffMm = Math.abs(lengthMm - lengthTarget);
+            double widthDiffMm = Math.abs(widthMm - widthTarget);
+            boolean lengthPass = lengthDiffMm <= lengthTolerance;
+            boolean widthPass = widthDiffMm <= widthToleranceUsed;
+            boolean pass = (lengthPass && widthPass);
             
             if (pass) {
                 passCount++;
             } else {
                 failCount++;
+            }
+            
+            // Determine failure reason
+            String failureReason = "";
+            if (!pass) {
+                boolean lengthFail = !lengthPass;
+                boolean widthFail = !widthPass;
+                if (lengthFail && widthFail) {
+                    failureReason = "Width & Height";
+                } else if (lengthFail) {
+                    failureReason = "Height"; // length corresponds to height
+                } else {
+                    failureReason = "Width";
+                }
             }
             
             // Color based on pass/fail
@@ -1046,9 +1148,10 @@ public class ConfigurationManager {
             int labelX = obb.center.x - 60;
             int labelY = obb.center.y - 10;
             
-            // Background for text
+            // Background for text (wider if showing failure reason)
+            int bgWidth = !pass ? 150 : 120;
             g2d.setColor(new Color(0, 0, 0, 200));
-            g2d.fillRect(labelX - 5, labelY - 40, 120, 50);
+            g2d.fillRect(labelX - 5, labelY - 40, bgWidth, 50);
             
             // Draw text
             g2d.setColor(boxColor);
@@ -1056,10 +1159,10 @@ public class ConfigurationManager {
             g2d.drawString(lengthLabel, labelX, labelY - 6);
             g2d.drawString(widthLabel, labelX, labelY + 10);
             
-            // Show deviation if fail
+            // Show failure reason if failing
             if (!pass) {
-                String devLabel = String.format("Δ%.0f%%", Math.max(lengthDiff, widthDiff));
-                g2d.drawString(devLabel, labelX, labelY + 24);
+                g2d.setColor(new Color(255, 140, 0)); // Orange for failure reason
+                g2d.drawString("Fails: " + failureReason, labelX, labelY + 24);
             }
             
             detectionNum++;
@@ -1076,8 +1179,12 @@ public class ConfigurationManager {
         g2d.setColor(new Color(255, 0, 0));
         g2d.drawString(String.format("Reject: %d", failCount), 185, 30);
         
-        g2d.dispose();
         return result;
+        } finally {
+            if (g2d != null) {
+                g2d.dispose();
+            }
+        }
     }
     
     /**
@@ -1095,11 +1202,31 @@ public class ConfigurationManager {
     
     
     /**
+     * Get the rules file path in the frontend directory
+     */
+    private File getRulesFile() {
+        // Try to find frontend directory from current location
+        File currentDir = new File(System.getProperty("user.dir"));
+        
+        // If we're in the project root, go to frontend
+        if (currentDir.getName().equals("DoughVisionDetector") || 
+            new File(currentDir, "frontend").exists()) {
+            currentDir = new File(currentDir, "frontend");
+        }
+        // If we're running from target, go up to frontend
+        else if (currentDir.getName().equals("target")) {
+            currentDir = currentDir.getParentFile();
+        }
+        
+        return new File(currentDir, "learned_rules.json");
+    }
+    
+    /**
      * Load learned rules from JSON file on startup
      */
     private void loadRulesFromFile() {
         try {
-            File rulesFile = new File("learned_rules.json");
+            File rulesFile = getRulesFile();
             if (!rulesFile.exists()) {
                 System.out.println("No saved rules found at startup.");
                 return;
@@ -1150,7 +1277,14 @@ public class ConfigurationManager {
      */
     private void saveRulesToFile() {
         try {
-            File rulesFile = new File("learned_rules.json");
+            File rulesFile = getRulesFile();
+            
+            // Ensure parent directory exists
+            File parentDir = rulesFile.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs();
+            }
+            
             try (FileWriter writer = new FileWriter(rulesFile)) {
                 JsonObject json = new JsonObject();
                 JsonArray rulesArray = new JsonArray();
@@ -1196,33 +1330,58 @@ public class ConfigurationManager {
     }
     
     public void setPixelsPerMm(double pixelsPerMm) {
-        this.pixelsPerMm = pixelsPerMm;
+        synchronized (lock) {
+            this.pixelsPerMm = pixelsPerMm;
+        }
         System.out.println("Calibration set: " + pixelsPerMm + " pixels/mm");
         saveSessionConfig(); // Auto-save
     }
     
-    public void setTargetDimensions(double widthMm, double heightMm, double tolerancePercent) {
-        this.targetWidth = widthMm;
-        this.targetHeight = heightMm;
-        this.tolerance = tolerancePercent;
-        System.out.println(String.format("Target: %.1fmm x %.1fmm ±%.1f%%", widthMm, heightMm, tolerancePercent));
+    public void setTargetDimensions(double widthMm, double heightMm, double widthTolMm, double heightTolMm) {
+        synchronized (lock) {
+            this.targetWidth = widthMm;
+            this.targetHeight = heightMm;
+            this.widthTolerance = widthTolMm;
+            this.heightTolerance = heightTolMm;
+        }
+        System.out.println(String.format("Target: %.1fmm (±%.1fmm) x %.1fmm (±%.1fmm)", 
+            widthMm, widthTolMm, heightMm, heightTolMm));
         saveSessionConfig(); // Auto-save
     }
     
     public double getPixelsPerMm() {
-        return pixelsPerMm;
+        synchronized (lock) {
+            return pixelsPerMm;
+        }
     }
     
     public double[] getTargetDimensions() {
-        return new double[]{targetWidth, targetHeight, tolerance};
+        synchronized (lock) {
+            return new double[]{targetWidth, targetHeight, widthTolerance, heightTolerance};
+        }
     }
     
     /**
      * Load session configuration from file
      */
+    private File getSessionConfigFile() {
+        // Use same logic as rules file
+        File currentDir = new File(System.getProperty("user.dir"));
+        
+        if (currentDir.getName().equals("DoughVisionDetector") || 
+            new File(currentDir, "frontend").exists()) {
+            currentDir = new File(currentDir, "frontend");
+        }
+        else if (currentDir.getName().equals("target")) {
+            currentDir = currentDir.getParentFile();
+        }
+        
+        return new File(currentDir, "session_config.json");
+    }
+    
     public boolean loadSessionConfig() {
         try {
-            File sessionFile = new File("session_config.json");
+            File sessionFile = getSessionConfigFile();
             if (!sessionFile.exists()) {
                 return false;
             }
@@ -1261,7 +1420,16 @@ public class ConfigurationManager {
                     pixelsPerMm = measurement.get("pixels_per_mm").getAsDouble();
                     targetWidth = measurement.get("target_width").getAsDouble();
                     targetHeight = measurement.get("target_height").getAsDouble();
-                    tolerance = measurement.get("tolerance").getAsDouble();
+                    // Try to load new format first, fall back to old format for compatibility
+                    if (measurement.has("width_tolerance")) {
+                        widthTolerance = measurement.get("width_tolerance").getAsDouble();
+                        heightTolerance = measurement.get("height_tolerance").getAsDouble();
+                    } else if (measurement.has("tolerance")) {
+                        // Old format: convert percentage to mm
+                        double tolPercent = measurement.get("tolerance").getAsDouble();
+                        widthTolerance = targetWidth * tolPercent / 100.0;
+                        heightTolerance = targetHeight * tolPercent / 100.0;
+                    }
                 }
                 
                 // Load processing settings
@@ -1284,7 +1452,14 @@ public class ConfigurationManager {
      */
     public void saveSessionConfig() {
         try {
-            File sessionFile = new File("session_config.json");
+            File sessionFile = getSessionConfigFile();
+            
+            // Ensure parent directory exists
+            File parentDir = sessionFile.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs();
+            }
+            
             try (FileWriter writer = new FileWriter(sessionFile)) {
                 JsonObject json = new JsonObject();
                 
@@ -1319,7 +1494,8 @@ public class ConfigurationManager {
                 measurement.addProperty("pixels_per_mm", pixelsPerMm);
                 measurement.addProperty("target_width", targetWidth);
                 measurement.addProperty("target_height", targetHeight);
-                measurement.addProperty("tolerance", tolerance);
+                measurement.addProperty("width_tolerance", widthTolerance);
+                measurement.addProperty("height_tolerance", heightTolerance);
                 json.add("measurement", measurement);
                 
                 // Save processing settings
